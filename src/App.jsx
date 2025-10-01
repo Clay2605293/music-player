@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react"
 import { parseBeautyParams, playBeautiful } from "./lib/beautyTone"
 import NoteChip from "./components/NoteChip"
-import "./styles.css"
+import "./index.css"
 
 export default function App() {
   const params = useMemo(() => parseBeautyParams(), [])
