@@ -1,0 +1,146 @@
+import * as Tone from "tone"
+
+// Utilidades musicales
+const KEYS = { C:0, D:2, E:4, F:5, G:7, A:9, B:11 }
+const MAJOR = [0,2,4,5,7,9,11]
+const MINOR = [0,2,3,5,7,8,10]
+
+const DEGREE_TO_TRIAD = {
+  "I":[0,4,7], "ii":[2,5,9], "iii":[4,7,11], "IV":[5,9,0+12],
+  "V":[7,11,2+12], "vi":[9,0+12,4+12]
+}
+
+export function parseBeautyParams() {
+  const url = new URL(window.location.href)
+  const raw = (url.searchParams.get("notes") || url.searchParams.get("n") || "")
+  const tokens = raw.split(/[,\-\s]+/).map(s=>s.trim()).filter(Boolean)
+
+  const key = (url.searchParams.get("key") || "C").toUpperCase()
+  const scaleName = (url.searchParams.get("scale") || "major").toLowerCase()
+  const progStr = (url.searchParams.get("prog") || "I-V-vi-IV")
+  const bpm = clamp(parseInt(url.searchParams.get("bpm")||"96",10), 40, 220)
+  const swing = clamp(parseFloat(url.searchParams.get("swing")||"0.18"), 0, 0.35)
+  const len = url.searchParams.get("len") || "8n" // duración melodía
+
+  return {
+    notes: tokens,
+    key, scaleName, prog: progStr.split("-"),
+    bpm, swing, len
+  }
+}
+
+function clamp(n, lo, hi){ return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : lo }
+
+function midiFromNoteLike(n){
+  // A4=69. A simple parser for tokens like "C4","G#3","A4"
+  const m = String(n).trim().match(/^([A-Ga-g])([#b]?)(\d)$/)
+  if(!m) return null
+  const L = m[1].toUpperCase(), acc = m[2], oct = +m[3]
+  const base = {C:0,D:2,E:4,F:5,G:7,A:9,B:11}[L]
+  const alt = acc==="#"?1: acc==="b"?-1:0
+  return (oct+1)*12 + base + alt
+}
+
+function quantizeToScale(midi, tonicMidi, scale){
+  // desplaza midi al grado más cercano de la escala desde la tonalidad
+  const rel = (midi - tonicMidi + 1200) % 12
+  let best = 0, bestDiff = 99
+  for (const deg of scale){
+    const diff = Math.min( (12 + rel - deg) % 12, (12 + deg - rel) % 12 )
+    if (diff < bestDiff){ bestDiff = diff; best = deg }
+  }
+  // conserva la octava original aproximando
+  const base = midi - ((midi - tonicMidi) % 12) + best
+  // corrige si quedamos lejos de la nota original (>6 semitonos)
+  const altUp = base + 12, altDn = base - 12
+  const pick = [base,altUp,altDn].sort((a,b)=>Math.abs(a-midi)-Math.abs(b-midi))[0]
+  return pick
+}
+
+function chordFromDegree(deg, tonicSemitone, scale){
+  // deg: "I","V","vi"... → triada en MIDI cerca de C4
+  const tonicC4 = 60 + tonicSemitone
+  const tri = DEGREE_TO_TRIAD[deg]
+  if(!tri) return [tonicC4, tonicC4+4, tonicC4+7]
+  return tri.map(semi => 48 + ((tonicSemitone + semi) % 24)) // cerca de C3–C5
+}
+
+function humanize(val, amt){ return val + (Math.random()*2-1)*amt }
+
+export async function playBeautiful({ notes, key, scaleName, prog, bpm, swing, len, onStep, onEnd }){
+  await Tone.start()
+  Tone.Transport.bpm.value = bpm
+  Tone.Transport.swing = swing
+  Tone.Transport.swingSubdivision = "8n"
+
+  const scale = scaleName === "minor" ? MINOR : MAJOR
+  const tonicSemitone = KEYS[key] ?? 0
+  const tonicMidi = 60 + tonicSemitone // C4 base + tonic
+
+  // Synths y FX
+  const reverb = new Tone.Reverb({ decay: 3.5, wet: 0.25 })
+  const delay = new Tone.FeedbackDelay({ delayTime: "8n", feedback: 0.25, wet: 0.18 })
+  reverb.toDestination(); delay.toDestination()
+
+  const lead = new Tone.Synth({
+    oscillator: { type: "triangle" },
+    envelope: { attack: 0.01, decay: 0.15, sustain: 0.18, release: 0.2 }
+  }).connect(delay).connect(reverb)
+
+  const pad = new Tone.PolySynth(Tone.Synth, {
+    oscillator: { type: "sine" },
+    envelope: { attack: 0.4, decay: 0.3, sustain: 0.4, release: 0.8 }
+  }).connect(reverb)
+
+  const bass = new Tone.MonoSynth({
+    oscillator: { type: "square" },
+    filter: { Q: 1, rolloff: -24 },
+    envelope: { attack: 0.02, decay: 0.2, sustain: 0.2, release: 0.2 }
+  }).connect(reverb)
+
+  // Construcción de secciones
+  const melodyMidis = notes
+    .map(midiFromNoteLike)
+    .filter(m => m != null)
+    .map(m => quantizeToScale(m, tonicMidi, scale))
+
+  // Repite la progresión para cubrir la longitud de la melodía
+  const stepsPerChord = 4 // 4 corcheas por acorde
+  const totalChords = Math.ceil(melodyMidis.length / stepsPerChord)
+  const expProg = Array.from({length: totalChords}, (_,i)=> prog[i % prog.length])
+
+  let t = Tone.now() + 0.2
+  let step = 0
+
+  // Acompañamiento: pad por compás y bajo en negras
+  expProg.forEach((degree, i) => {
+    const tri = chordFromDegree(degree, tonicSemitone, scale)
+    const barTime = t + i * 4 * Tone.Time("8n").toSeconds()
+
+    // Pad (bloque)
+    pad.triggerAttackRelease(tri.map(n=>Tone.Frequency(n, "midi")), "1m", barTime, 0.35)
+
+    // Bajo (negras: 4 por compás)
+    for (let k=0;k<4;k++){
+      const bt = barTime + k * Tone.Time("4n").toSeconds()
+      bass.triggerAttackRelease(Tone.Frequency(tri[0]-12, "midi"), "8n", humanize(bt, 0.005), 0.6 - k*0.05)
+    }
+  })
+
+  // Melodía principal
+  const seq = new Tone.Part((time, idx) => {
+    const m = melodyMidis[idx]
+    const v = 0.65 + 0.25*Math.sin(idx*0.7)
+    onStep?.(idx)
+    lead.triggerAttackRelease(Tone.Frequency(m, "midi"), len, humanize(time, 0.006), v)
+  }, melodyMidis.map((_,i) => [t + i*Tone.Time("8n").toSeconds(), i]))
+
+  seq.start(t)
+  Tone.Transport.start(t)
+
+  const totalSeconds = melodyMidis.length * Tone.Time("8n").toSeconds() + 2.0
+  await new Promise(r => setTimeout(r, totalSeconds*1000))
+  Tone.Transport.stop()
+  lead.dispose(); pad.dispose(); bass.dispose(); reverb.dispose(); delay.dispose()
+  onEnd?.()
+}
