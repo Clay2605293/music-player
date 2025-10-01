@@ -1,7 +1,7 @@
 // src/lib/beautyClassic.js
 import * as Tone from "tone"
 
-// ===== Utilidades mínimas (copiadas de beauty) =====
+// ===== Utilidades mínimas (tomadas de beauty) =====
 const KEYS = { C:0, D:2, E:4, F:5, G:7, A:9, B:11 }
 const MAJOR = [0,2,4,5,7,9,11]
 const MINOR = [0,2,3,5,7,8,10]
@@ -41,13 +41,13 @@ function mapMelodyMidis({notes, key, scaleName, style="hybrid"}){
     return (Math.abs(q - m) <= 1) ? q : m
   })
 }
-function chordFromDegree(deg, tonicSemitone){ // C3–C5
+function chordFromDegree(deg, tonicSemitone){ // C3–C5 aprox
   const tri = DEGREE_TO_TRIAD[deg] || [0,4,7]
   return tri.map(semi => 48 + ((tonicSemitone + semi) % 24))
 }
 function humanize(val, amt){ return val + (Math.random()*2-1)*amt }
 
-// ===== PRNG sencillo por seed (xorshift32) solo para variar acompañamiento/timbre =====
+// PRNG ligero para variar acompañamiento
 function hash32(s){
   let h = 2166136261 >>> 0
   for (let i=0;i<s.length;i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0 }
@@ -59,7 +59,12 @@ function rngFromSeed(seedStr){
 }
 const pick = (arr, r) => arr[Math.floor(r()*arr.length)]
 
-// ===== Motor clásico (piano + strings + bajo) =====
+// Relación funcional simple para acorde complementario (clásico V⇄I, vi⇄IV, ii→V…)
+const COMPLEMENT_OF = {
+  I:"V", V:"I", vi:"IV", IV:"V", ii:"V", iii:"vi"
+}
+
+// ===== Motor clásico: PIANO SOLO =====
 export async function playBeautifulClassic({
   notes, key, scaleName, prog, bpm, swing, len, gap, style="hybrid", seedStr,
   onStep, onEnd
@@ -67,9 +72,12 @@ export async function playBeautifulClassic({
   await Tone.start()
 
   const t = Tone.getTransport()
+  // limpieza por si había algo corriendo
+  t.stop(); t.cancel(0)
+
   // variaciones leves por seed (sin romper BPM del URL)
-  const r = rngFromSeed(seedStr || notes.join(","))
-  const bpmJitter = (r()<0.5 ? -1 : +1) * Math.floor(r()*3) // -2..+2 aprox
+  const r = rngFromSeed(seedStr || (notes||[]).join(","))
+  const bpmJitter = (r()<0.5 ? -1 : +1) * Math.floor(r()*3) // -2..+2
   t.bpm.value = Math.max(40, Math.min(220, (bpm||96) + bpmJitter))
   t.swing = swing ?? 0.16
   t.swingSubdivision = "8n"
@@ -77,124 +85,101 @@ export async function playBeautifulClassic({
   const noteDurSec = Tone.Time(len || "8n").toSeconds()
   const stepSec = noteDurSec + (gap ?? 0.05)
 
-  // === Timbres (clásicos) ===
-  // Piano real (Sampler Salamander)
+  // === Timbre: Piano Salamander + un reverb de sala muy discreto ===
   const piano = new Tone.Sampler({
     urls: {
-      "A1": "A1.mp3", "C2": "C2.mp3", "D#2": "Ds2.mp3", "F#2": "Fs2.mp3",
-      "A2": "A2.mp3", "C3": "C3.mp3", "D#3": "Ds3.mp3", "F#3": "Fs3.mp3",
-      "A3": "A3.mp3", "C4": "C4.mp3", "D#4": "Ds4.mp3", "F#4": "Fs4.mp3",
-      "A4": "A4.mp3", "C5": "C5.mp3", "D#5": "Ds5.mp3", "F#5": "Fs5.mp3",
-      "A5": "A5.mp3"
+      "A1":"A1.mp3","C2":"C2.mp3","D#2":"Ds2.mp3","F#2":"Fs2.mp3",
+      "A2":"A2.mp3","C3":"C3.mp3","D#3":"Ds3.mp3","F#3":"Fs3.mp3",
+      "A3":"A3.mp3","C4":"C4.mp3","D#4":"Ds4.mp3","F#4":"Fs4.mp3",
+      "A4":"A4.mp3","C5":"C5.mp3","D#5":"Ds5.mp3","F#5":"Fs5.mp3",
+      "A5":"A5.mp3"
     },
-    release: 1.2,
+    release: 1.3,
     baseUrl: "https://tonejs.github.io/audio/salamander/"
   })
-  // Strings suaves
-  const strings = new Tone.PolySynth(Tone.Synth, {
-    oscillator: { type: "sawtooth" },
-    envelope: { attack: 0.55, decay: 0.35, sustain: 0.7, release: 1.2 }
-  })
-  const stringsLP = new Tone.Filter({ type:"lowpass", frequency: 2400, Q: 0.4 })
-  // Bajo
-  const bass = new Tone.MonoSynth({
-    oscillator:{ type:"triangle" },
-    filter:{ Q:1, rolloff:-24 },
-    envelope:{ attack:0.01, decay:0.18, sustain:0.24, release:0.24 }
-  })
+  // Reverb pequeño tipo sala (natural, nada “electro”)
+  const hall = new Tone.Reverb({ decay: 1.8, wet: 0.12 })
+  piano.connect(hall).toDestination()
 
-  // FX y dinámica (suaves)
-  const reverb = new Tone.Reverb({ decay: 2.4, wet: 0.18 })
-  const comp   = new Tone.Compressor({ threshold: -18, ratio: 3, attack: 0.005, release: 0.2 })
-  const limiter= new Tone.Limiter(-1)
+  try { await piano.loaded } catch(e){ console.warn("Piano not fully loaded", e) }
 
-  piano.chain(reverb, comp, limiter).toDestination()
-  strings.chain(stringsLP, reverb, comp, limiter).toDestination()
-  bass.chain(reverb, comp, limiter).toDestination()
-
-  try { await piano.loaded } catch (e) { console.warn("Piano not fully loaded", e) }
-
-  // === Melodía: la de Beauty (HYBRID por defecto)
+  // === Melodía (misma que Beauty HYBRID por defecto) ===
   const melodyMidis = mapMelodyMidis({notes, key, scaleName, style})
   const tonicSemitone = KEYS[key] ?? 0
 
-  // === Acompañamiento fijo diatónico por compás ===
+  // === Acompañamiento sólo con el piano ===
   const barSec = 4 * Tone.Time("4n").toSeconds()
   const stepsPerBar = Math.max(1, Math.round(barSec / stepSec))
   const totalBars = Math.ceil(Math.max(1, melodyMidis.length) / stepsPerBar)
 
-  // patrón acompañamiento (por seed): block / alberti / arpegio roto
+  // patrón de mano izq. (por seed)
   const accType = pick(["block","alberti","broken"], r)
 
   const barIds = []
   for (let bar = 0; bar < totalBars; bar++){
-    const barTime = bar * barSec + 0.12
+    const barTime = bar*barSec + 0.10
     const degree = prog[bar % prog.length]
-    const triad = chordFromDegree(degree, tonicSemitone) // [midi,midi,midi]
+    const triad = chordFromDegree(degree, tonicSemitone) // acorde base
+    // acorde complementario (función sencilla); si no existe mapeo, usa el mismo
+    const compDegree = COMPLEMENT_OF[degree] || degree
+    const compTriad = chordFromDegree(compDegree, tonicSemitone)
 
-    const id = t.schedule((time) => {
+    const id = t.schedule((time)=>{
       try{
-        // Strings: acorde sostenido con leve swell
-        strings.triggerAttackRelease(
-          triad.map(n => Tone.Frequency(n,"midi")),
-          barSec * 0.95,
-          time,
-          0.22
-        )
-        // Bajo: raíz en negras (root 8th), alternando con 5ª si quieres más movimiento
-        const bassSeq = [ triad[0]-12, triad[2]-12, triad[0]-12, triad[2]-12 ]
-        for (let k=0;k<4;k++){
-          const bt = time + k * Tone.Time("4n").toSeconds()
-          bass.triggerAttackRelease(Tone.Frequency(bassSeq[k], "midi"), "8n", humanize(bt,0.003), 0.5 - k*0.05)
-        }
-
-        // Piano acompañamiento (mano izquierda): block / alberti / broken
+        // Acompañamiento mano izquierda
         if (accType === "block"){
-          // 2 golpes por compás
-          piano.triggerAttackRelease(triad.map(n=>Tone.Frequency(n,"midi")), "2n", time+0.001, 0.25)
-          piano.triggerAttackRelease(triad.map(n=>Tone.Frequency(n,"midi")), "2n", time+barSec*0.5, 0.22)
+          // 2 golpes por compás (blancos)
+          piano.triggerAttackRelease(triad.map(n=>Tone.Frequency(n,"midi")), "2n", time+0.001, 0.26)
+          piano.triggerAttackRelease(triad.map(n=>Tone.Frequency(n,"midi")), "2n", time+barSec*0.5, 0.23)
         } else if (accType === "alberti"){
-          // patrón: bajo-alto-medio-alto (4x corcheas)
+          // bajo–alto–medio–alto en corcheas
           const order = [0,2,1,2]
           for (let k=0;k<4;k++){
-            const bt = time + k * Tone.Time("4n").toSeconds()
+            const bt = time + k*Tone.Time("4n").toSeconds()
             const note = triad[order[k % order.length]]
-            piano.triggerAttackRelease(Tone.Frequency(note,"midi"), "8n", humanize(bt,0.003), 0.22)
+            piano.triggerAttackRelease(Tone.Frequency(note,"midi"), "8n", humanize(bt,0.003), 0.23)
           }
-        } else { // "broken": 6 notas por compás si cabe
+        } else { // "broken": arpegio de 6 notas si cabe
           const seq = [ triad[0], triad[1], triad[2], triad[1], triad[0], triad[1] ]
           const dt = barSec / seq.length
           for (let k=0;k<seq.length;k++){
             const bt = time + k*dt
-            piano.triggerAttackRelease(Tone.Frequency(seq[k],"midi"), "16n", humanize(bt,0.0025), 0.2)
+            piano.triggerAttackRelease(Tone.Frequency(seq[k],"midi"), "16n", humanize(bt,0.0025), 0.21)
           }
         }
-      } catch(err){ console.error("Companion schedule error:", err) }
+
+        // “Acorde complementario” en el tiempo fuerte del medio del compás
+        // (entra suave para dar color clásico sin sonar eléctrico)
+        const mid = time + barSec*0.5
+        piano.triggerAttackRelease(
+          compTriad.map(n=>Tone.Frequency(n,"midi")),
+          "4n",
+          humanize(mid, 0.002),
+          0.22
+        )
+      } catch(err){ console.error("Piano comp schedule error:", err) }
     }, `+${barTime.toFixed(3)}`)
     barIds.push(id)
   }
 
   // === Melodía principal (mano derecha) + animación ===
   let i = 0
-  const seqId = t.scheduleRepeat((time) => {
+  const seqId = t.scheduleRepeat((time)=>{
     if (i >= melodyMidis.length){
       t.clear(seqId)
       t.schedule(()=>{
         barIds.forEach(id => t.clear(id))
-        t.stop()
-        t.cancel(0)
-        piano.dispose(); strings.dispose(); stringsLP.dispose(); reverb.dispose(); comp.dispose(); limiter.dispose()
-        bass.dispose()
+        t.stop(); t.cancel(0)
+        piano.dispose(); hall.dispose()
         onEnd?.()
-      }, "+0.9")
+      }, "+0.8")
       return
     }
     const m = melodyMidis[i]
     onStep?.(i)
-    // mano derecha: piano lead
-    piano.triggerAttackRelease(Tone.Frequency(m,"midi"), noteDurSec, humanize(time,0.0035), 0.7)
+    piano.triggerAttackRelease(Tone.Frequency(m,"midi"), noteDurSec, humanize(time,0.0035), 0.72)
     i++
-  }, stepSec, "+0.10")
+  }, stepSec, "+0.12")
 
   // Arranque
   t.start()
