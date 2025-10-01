@@ -1,4 +1,3 @@
-// src/lib/seedAvalanche.js
 import * as Tone from "tone"
 
 // ---------- helpers musicales ----------
@@ -15,7 +14,7 @@ const PROGRESSIONS = [
 const DEGREE_TO_TRIAD = { I:[0,4,7], ii:[2,5,9], iii:[4,7,11], IV:[5,9,12], V:[7,11,14], vi:[9,12,16] }
 
 const chordFromDegree = (deg, tonic) =>
-  (DEGREE_TO_TRIAD[deg]||[0,4,7]).map(s => 48 + ((tonic + s) % 24)) // cerca C3–C5
+  (DEGREE_TO_TRIAD[deg]||[0,4,7]).map(s => 48 + ((tonic + s) % 24)) // ~C3–C5
 
 const human = (x,a)=> x + (Math.random()*2-1)*a
 
@@ -25,7 +24,6 @@ async function sha256Bytes(str){
   const buf = await crypto.subtle.digest("SHA-256", data)
   return new Uint8Array(buf) // 32 bytes
 }
-// xoshiro128** PRNG a partir de 16 bytes del hash
 function xoshiroFromBytes(bytes, off=0){
   let s0 = readU32(bytes, off+0)|1, s1=readU32(bytes, off+4)|1, s2=readU32(bytes, off+8)|1, s3=readU32(bytes, off+12)|1
   const rotl = (x,k)=>((x<<k)|(x>>>(32-k)))>>>0
@@ -42,33 +40,27 @@ function readU32(b,o){ return (b[o] | (b[o+1]<<8) | (b[o+2]<<16) | (b[o+3]<<24))
 function pick(arr, rnd){ return arr[Math.floor(rnd()*arr.length)] }
 function pickKey(rnd){ return Object.keys(KEYS)[Math.floor(rnd()*7)] }
 function pickScale(rnd){ return rnd()<0.35 ? "minor" : "major" }
-function pickProg(rnd){ return pick(PROGRESSIONS, rnd) }
 function scalePitches(key, scaleName){
   const tonic = KEYS[key]||0
   const sc = (scaleName==="minor")?MINOR:MAJOR
   return sc.map(s=> (tonic+s)%12 )
 }
-
-// genera una melodía a partir del seed (motivos + saltos + rests)
 function generateMelody({steps, rnd, key, scaleName}){
   const pcs = scalePitches(key, scaleName)
-  const octaves = [4,4,5,3,5,4,5]  // sesgo a 4–5
+  const octaves = [4,4,5,3,5,4,5]
   const melody = []
-  // motivo base (4 notas)
   const motif = Array.from({length:4}, ()=> pcs[Math.floor(rnd()*pcs.length)] + 12*pick(octaves, rnd))
-  // transformaciones
   const invert = rnd()<0.5, retro = rnd()<0.35
-  const motif2 = motif.map((m)=> invert ? (motif[0]-(m-motif[0])) : m)
+  const motif2 = motif.map(m=> invert ? (motif[0]-(m-motif[0])) : m)
   const motifUse = retro ? motif2.slice().reverse() : motif2
-
   let idx = 0
   for (let i=0;i<steps;i++){
-    if (i%4===0 && i) { // cada compás, varía
+    if (i%4===0 && i) {
       const delta = (rnd()<0.6)? (rnd()<0.5?+2:-2) : 0
       for (let k=0;k<motifUse.length;k++) motifUse[k]+=delta
     }
     let note = motifUse[idx % motifUse.length]
-    if (rnd()<0.15){ note += (rnd()<0.5?+12:-12) } // salto grande ocasional
+    if (rnd()<0.15){ note += (rnd()<0.5?+12:-12) }
     while (note < 48) note += 12
     while (note > 84) note -= 12
     const rest = rnd()<0.07
@@ -83,8 +75,15 @@ export async function playSeedAvalanche({
   notes, bpm, len, gap, swing, onStep, onEnd, seedStr, key:forcedKey, scaleName:forcedScale, prog:forcedProg
 }){
   await Tone.start()
+
+  // Limpieza por si había algo corriendo antes (evita eventos colgados)
   const t = Tone.getTransport()
-  t.bpm.value = bpm; t.swing = swing; t.swingSubdivision = "8n"
+  t.stop()
+  t.cancel(0)
+
+  t.bpm.value = bpm
+  t.swing = swing
+  t.swingSubdivision = "8n"
 
   // seed desde iv|seed|notes
   const rawSeed = seedStr || (Array.isArray(notes) ? notes.join(",") : String(notes||""))
@@ -96,17 +95,40 @@ export async function playSeedAvalanche({
   const scaleName = forcedScale || pickScale(rnd)
   const prog = forcedProg || pick(PROGRESSIONS, rnd)
 
-  // instrumentos (varían por seed)
-  const leadType = pick(["triangle","sawtooth","square"], rnd)
-  const padType  = pick(["sine","triangle"], rnd)
-  const bassType = pick(["square","sawtooth"], rnd)
+  // ===== Instrumentos =====
+  // Piano realista (Sampler Salamander) como lead por defecto
+  const piano = new Tone.Sampler({
+    urls: {
+      A1: "A1.mp3", C2: "C2.mp3", D#2: "Ds2.mp3", F#2: "Fs2.mp3",
+      A2: "A2.mp3", C3: "C3.mp3", D#3: "Ds3.mp3", F#3: "Fs3.mp3",
+      A3: "A3.mp3", C4: "C4.mp3", D#4: "Ds4.mp3", F#4: "Fs4.mp3",
+      A4: "A4.mp3", C5: "C5.mp3", D#5: "Ds5.mp3", F#5: "Fs5.mp3",
+      A5: "A5.mp3"
+    },
+    release: 1.2,
+    baseUrl: "https://tonejs.github.io/audio/salamander/"
+  })
+  const pad  = new Tone.PolySynth(Tone.Synth, {
+    oscillator:{ type:"sine" },
+    envelope:{ attack:0.45, decay:0.3, sustain:0.5, release:1.0 }
+  })
+  const bass = new Tone.MonoSynth({
+    oscillator:{ type:"triangle" },
+    filter:{ Q:1, rolloff:-24 },
+    envelope:{ attack:0.01, decay:0.18, sustain:0.22, release:0.22 }
+  })
 
-  const reverb = new Tone.Reverb({ decay: 2.6 + rnd()*2.2, wet: 0.22 + rnd()*0.12 }).toDestination()
-  const delay  = new Tone.FeedbackDelay({ delayTime: pick(["8n","16n"], rnd), feedback: 0.18 + rnd()*0.16, wet: 0.14 + rnd()*0.1 }).toDestination()
+  // FX suaves (evitar “electro”)
+  const reverb = new Tone.Reverb({ decay: 2.2, wet: 0.18 })
+  const delay  = new Tone.FeedbackDelay({ delayTime: "16n", feedback: 0.14, wet: 0.10 })
 
-  const lead = new Tone.Synth({ oscillator:{type:leadType}, envelope:{attack:0.01, decay:0.13, sustain:0.18, release:0.22} }).connect(delay).connect(reverb)
-  const pad  = new Tone.PolySynth(Tone.Synth, { oscillator:{type:padType},  envelope:{attack:0.35, decay:0.3, sustain:0.45, release:0.9} }).connect(reverb)
-  const bass = new Tone.MonoSynth({ oscillator:{type:bassType}, filter:{Q:1, rolloff:-24}, envelope:{attack:0.02, decay:0.22, sustain:0.22, release:0.22} }).connect(reverb)
+  piano.connect(reverb).toDestination()
+  pad.connect(reverb).toDestination()
+  bass.connect(reverb).toDestination()
+  delay.toDestination() // deja el delay disponible para el piano abajo si quieres
+
+  // Asegúrate de que el sampler cargó
+  try { await piano.loaded } catch (e) { console.warn("Piano not fully loaded", e) }
 
   // genera melodía
   const steps = Math.max(16, Math.min(256, (notes && notes.length) || 64))
@@ -128,15 +150,17 @@ export async function playSeedAvalanche({
     const chord  = chordFromDegree(degree, tonicSemitone)
 
     const id = t.schedule((time)=>{
-      // pad
-      pad.triggerAttackRelease(chord.map(n=>Tone.Frequency(n,"midi")), barSec, time, 0.33)
-      // bajo patrón
-      const pattern = [0,2,3,1]
-      for (let k=0;k<4;k++){
-        const idx = pattern[k % pattern.length]
-        const bt = time + k*Tone.Time("4n").toSeconds()
-        bass.triggerAttackRelease(Tone.Frequency(chord[idx]-12, "midi"), "8n", human(bt,0.004), 0.6 - k*0.06)
-      }
+      try{
+        // pad
+        pad.triggerAttackRelease(chord.map(n=>Tone.Frequency(n,"midi")), barSec, time, 0.28)
+        // bajo patrón
+        const pattern = [0,2,3,1]
+        for (let k=0;k<4;k++){
+          const idx = pattern[k % pattern.length]
+          const bt = time + k*Tone.Time("4n").toSeconds()
+          bass.triggerAttackRelease(Tone.Frequency(chord[idx]-12, "midi"), "8n", human(bt,0.003), 0.55 - k*0.05)
+        }
+      } catch(err){ console.error("Bar schedule error:", err) }
     }, `+${barTime.toFixed(3)}`)
     barIds.push(id)
   }
@@ -144,24 +168,31 @@ export async function playSeedAvalanche({
   // ===== Melodía + animación con scheduleRepeat =====
   let i = 0
   const seqId = t.scheduleRepeat((time)=>{
-    if (i >= melody.length){
-      t.clear(seqId)
-      const stopId = t.schedule(()=>{
-        barIds.forEach(id => t.clear(id))
-        t.stop()
-        t.cancel(0)
-        lead.dispose(); pad.dispose(); bass.dispose(); reverb.dispose(); delay.dispose()
-        onEnd?.()
-      }, "+0.8")
-      return
+    try{
+      if (i >= melody.length){
+        t.clear(seqId)
+        const stopId = t.schedule(()=>{
+          barIds.forEach(id => t.clear(id))
+          t.stop()
+          t.cancel(0)
+          // cleanup
+          piano.dispose(); pad.dispose(); bass.dispose(); reverb.dispose(); delay.dispose()
+          onEnd?.()
+        }, "+0.8")
+        return
+      }
+      const m = melody[i]
+      onStep?.(i)
+      if (m != null){
+        const v = 0.7 + 0.2*Math.sin(i*0.4)
+        // Dispara piano (Sampler usa nota en Hz o midi convertido)
+        piano.triggerAttackRelease(Tone.Frequency(m, "midi"), noteDur, human(time,0.004), v)
+      }
+      i++
+    } catch(err){
+      console.error("Seq step error:", err)
+      i++ // avanza aunque haya error para no quedar colgado
     }
-    const m = melody[i]
-    onStep?.(i)
-    if (m != null){
-      const v = 0.6 + 0.3*Math.sin(i*0.5)
-      lead.triggerAttackRelease(Tone.Frequency(m,"midi"), noteDur, human(time,0.006), v)
-    }
-    i++
   }, stepSec, "+0.1")
 
   // arrancar
