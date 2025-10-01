@@ -1,3 +1,4 @@
+// src/lib/seedAvalanche.js
 import * as Tone from "tone"
 
 // ---------- helpers musicales ----------
@@ -12,7 +13,10 @@ const PROGRESSIONS = [
   ["I","IV","V","IV"],
 ]
 const DEGREE_TO_TRIAD = { I:[0,4,7], ii:[2,5,9], iii:[4,7,11], IV:[5,9,12], V:[7,11,14], vi:[9,12,16] }
-const chordFromDegree = (deg, t) => (DEGREE_TO_TRIAD[deg]||[0,4,7]).map(s=>48+((t+s)%24))
+
+const chordFromDegree = (deg, tonic) =>
+  (DEGREE_TO_TRIAD[deg]||[0,4,7]).map(s => 48 + ((tonic + s) % 24)) // cerca C3–C5
+
 const human = (x,a)=> x + (Math.random()*2-1)*a
 
 // ---------- hashing & PRNG (avalancha fuerte) ----------
@@ -50,29 +54,23 @@ function generateMelody({steps, rnd, key, scaleName}){
   const pcs = scalePitches(key, scaleName)
   const octaves = [4,4,5,3,5,4,5]  // sesgo a 4–5
   const melody = []
-  // motivo base (4 notas) a partir del seed
+  // motivo base (4 notas)
   const motif = Array.from({length:4}, ()=> pcs[Math.floor(rnd()*pcs.length)] + 12*pick(octaves, rnd))
-  // decide transformaciones (invert, retrograde)
+  // transformaciones
   const invert = rnd()<0.5, retro = rnd()<0.35
-  const motif2 = motif.map((m,i)=> invert ? (motif[0]-(m-motif[0])) : m)
+  const motif2 = motif.map((m)=> invert ? (motif[0]-(m-motif[0])) : m)
   const motifUse = retro ? motif2.slice().reverse() : motif2
 
   let idx = 0
   for (let i=0;i<steps;i++){
-    if (i%4===0 && i) { // cada compás, varía un poco el motivo
+    if (i%4===0 && i) { // cada compás, varía
       const delta = (rnd()<0.6)? (rnd()<0.5?+2:-2) : 0
       for (let k=0;k<motifUse.length;k++) motifUse[k]+=delta
     }
     let note = motifUse[idx % motifUse.length]
-    // con baja prob, salto grande (quebramos patrón)
-    if (rnd()<0.15){
-      const big = (rnd()<0.5?+12:-12)
-      note += big
-    }
-    // clamp a rango razonable
+    if (rnd()<0.15){ note += (rnd()<0.5?+12:-12) } // salto grande ocasional
     while (note < 48) note += 12
     while (note > 84) note -= 12
-    // rests esporádicos
     const rest = rnd()<0.07
     melody.push(rest ? null : note)
     idx++
@@ -89,11 +87,11 @@ export async function playSeedAvalanche({
   t.bpm.value = bpm; t.swing = swing; t.swingSubdivision = "8n"
 
   // seed desde iv|seed|notes
-  const rawSeed = seedStr || notes.join(",")
+  const rawSeed = seedStr || (Array.isArray(notes) ? notes.join(",") : String(notes||""))
   const digest = await sha256Bytes(rawSeed)
   const rnd = xoshiroFromBytes(digest, 0)
 
-  // parámetros derivados del seed (pero permiten override si pasan por URL)
+  // parámetros derivados del seed (permiten override)
   const key = forcedKey || pickKey(rnd)
   const scaleName = forcedScale || pickScale(rnd)
   const prog = forcedProg || pick(PROGRESSIONS, rnd)
@@ -111,49 +109,61 @@ export async function playSeedAvalanche({
   const bass = new Tone.MonoSynth({ oscillator:{type:bassType}, filter:{Q:1, rolloff:-24}, envelope:{attack:0.02, decay:0.22, sustain:0.22, release:0.22} }).connect(reverb)
 
   // genera melodía
-  const steps = Math.max(16, Math.min(256, notes.length||64))
+  const steps = Math.max(16, Math.min(256, (notes && notes.length) || 64))
   const melody = generateMelody({steps, rnd, key, scaleName})
 
-  // acomp: por compás y siguiendo seed
+  // tiempos base
   const tonicSemitone = KEYS[key]||0
-  const t0 = Tone.now()+0.1
+  const barSec = 4 * Tone.Time("4n").toSeconds()
   const noteDur = Tone.Time(len).toSeconds()
   const stepSec = noteDur + gap
-  const barSec = 4 * Tone.Time("4n").toSeconds()
   const stepsPerBar = Math.max(1, Math.round(barSec/stepSec))
   const totalBars = Math.ceil(melody.length/stepsPerBar)
 
-  // programar acompañamiento
+  // ===== Acompañamiento programado en el Transport =====
+  const barIds = []
   for(let bar=0; bar<totalBars; bar++){
-    const barStart = t0 + bar*barSec
+    const barTime = bar*barSec + 0.1
     const degree = prog[bar % prog.length]
-    const chord = chordFromDegree(degree, tonicSemitone)
-    // pad
-    pad.triggerAttackRelease(chord.map(n=>Tone.Frequency(n,"midi")), barSec, barStart, 0.33)
-    // bajo patrón
-    const pattern = [0,2,3,1]
-    for (let k=0;k<4;k++){
-      const idx = pattern[(k + Math.floor(rnd()*pattern.length)) % pattern.length]
-      const bt = barStart + k*Tone.Time("4n").toSeconds()
-      bass.triggerAttackRelease(Tone.Frequency(chord[idx]-12, "midi"), "8n", human(bt,0.004), 0.6 - k*0.06)
-    }
+    const chord  = chordFromDegree(degree, tonicSemitone)
+
+    const id = t.schedule((time)=>{
+      // pad
+      pad.triggerAttackRelease(chord.map(n=>Tone.Frequency(n,"midi")), barSec, time, 0.33)
+      // bajo patrón
+      const pattern = [0,2,3,1]
+      for (let k=0;k<4;k++){
+        const idx = pattern[k % pattern.length]
+        const bt = time + k*Tone.Time("4n").toSeconds()
+        bass.triggerAttackRelease(Tone.Frequency(chord[idx]-12, "midi"), "8n", human(bt,0.004), 0.6 - k*0.06)
+      }
+    }, `+${barTime.toFixed(3)}`)
+    barIds.push(id)
   }
 
-  // melodía y animación
-  for (let i=0;i<melody.length;i++){
-    const when = t0 + i*stepSec
+  // ===== Melodía + animación con scheduleRepeat =====
+  let i = 0
+  const seqId = t.scheduleRepeat((time)=>{
+    if (i >= melody.length){
+      t.clear(seqId)
+      const stopId = t.schedule(()=>{
+        barIds.forEach(id => t.clear(id))
+        t.stop()
+        t.cancel(0)
+        lead.dispose(); pad.dispose(); bass.dispose(); reverb.dispose(); delay.dispose()
+        onEnd?.()
+      }, "+0.8")
+      return
+    }
     const m = melody[i]
     onStep?.(i)
-    if (m!=null){
+    if (m != null){
       const v = 0.6 + 0.3*Math.sin(i*0.5)
-      lead.triggerAttackRelease(Tone.Frequency(m,"midi"), noteDur, human(when,0.006), v)
+      lead.triggerAttackRelease(Tone.Frequency(m,"midi"), noteDur, human(time,0.006), v)
     }
-    // eslint-disable-next-line no-await-in-loop
-    await new Promise(r=>setTimeout(r, stepSec*1000))
-  }
+    i++
+  }, stepSec, "+0.1")
 
-  // cola y cleanup
-  await new Promise(r=>setTimeout(r, 1200))
-  lead.dispose(); pad.dispose(); bass.dispose(); reverb.dispose(); delay.dispose()
-  onEnd?.()
+  // arrancar
+  t.start()
 }

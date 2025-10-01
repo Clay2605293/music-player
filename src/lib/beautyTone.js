@@ -35,11 +35,11 @@ export function parseBeautyParams() {
   const len  = url.searchParams.get("len") || "8n"
   const gap  = clampFloat(url.searchParams.get("gap"), 0, 0.5, 0.05)
 
-  // Defaults deseados:
+  // Defaults deseados
   const styleParam = (url.searchParams.get("style") || "hybrid").toLowerCase() // literal|hybrid|quant
   const followParam = url.searchParams.get("follow")
-  const follow = followParam ? (followParam.toLowerCase() === "on") : true   // <- ON por defecto
-  const style = styleParam                                                     // <- HYBRID por defecto
+  const follow = followParam ? (followParam.toLowerCase() === "on") : true // ON por defecto
+  const style = styleParam                                                 // HYBRID por defecto
 
   const seedStr = url.searchParams.get("seed") || url.searchParams.get("iv") || raw || "seed"
 
@@ -52,7 +52,7 @@ export function parseBeautyParams() {
 function clampInt(v, min, max, def){ const n = parseInt(v??"",10); return Number.isFinite(n)?Math.max(min,Math.min(max,n)):def }
 function clampFloat(v, min, max, def){ const n = parseFloat(v??""); return Number.isFinite(n)?Math.max(min,Math.min(max,n)):def }
 
-// PRNG determinista (xorshift32)
+// PRNG determinista (xorshift32) para timbres/variaciones
 function hash32(s){
   let h = 2166136261 >>> 0
   for (let i=0;i<s.length;i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0 }
@@ -128,11 +128,12 @@ function chordFromBarNotes(barMidis, key, scaleName){
   return intervals.map(semi => rootMidi + semi)
 }
 
-// ===== Motor en segundos (sin Transport.run) =====
+// ===== Motor con Transport (sin loops con setTimeout) =====
 export async function playBeautiful({
   notes, key, scaleName, prog, bpm, swing, len, gap, style, follow, seedStr, onStep, onEnd
 }){
   await Tone.start()
+
   const transport = Tone.getTransport()
   transport.bpm.value = bpm
   transport.swing = swing
@@ -174,65 +175,77 @@ export async function playBeautiful({
   }
 
   const tonicSemitone = KEYS[key] ?? 0
-  const t0 = Tone.now() + 0.1
   const noteDurSec = Tone.Time(len).toSeconds()
-  const gapSec = gap
-  const stepSec = noteDurSec + gapSec
+  const stepSec = noteDurSec + gap
 
-  // === Acompañamiento por compás ===
+  // === Acompañamiento por compás (programado en Transport) ===
   const barLenSec = 4 * Tone.Time("4n").toSeconds()
   const stepsPerBar = Math.max(1, Math.round(barLenSec / stepSec))
   const totalBars = Math.ceil(Math.max(1, melodyMidis.length) / stepsPerBar)
 
+  const barIds = []
   for (let bar = 0; bar < totalBars; bar++){
-    const barStart = t0 + bar * barLenSec
+    const barTime = bar * barLenSec + 0.1 // desplazamos un pelín el arranque
     const i0 = bar * stepsPerBar
     const i1 = Math.min(melodyMidis.length, i0 + stepsPerBar)
     const barNotes = melodyMidis.slice(i0, i1)
 
-    let chord
-    if (follow) {
-      chord = chordFromBarNotes(barNotes, key, scaleName) || chordFromDegree("I", tonicSemitone)
-    } else {
+    const id = transport.schedule((time) => {
       const degree = prog[bar % prog.length]
-      chord = chordFromDegree(degree, tonicSemitone)
-    }
+      const chord = follow
+        ? (chordFromBarNotes(barNotes, key, scaleName) || chordFromDegree("I", tonicSemitone))
+        :  chordFromDegree(degree, tonicSemitone)
 
-    // pad del compás
-    pad.triggerAttackRelease(chord.map(n => Tone.Frequency(n,"midi")), barLenSec, barStart, 0.34)
+      // pad (1 compás)
+      pad.triggerAttackRelease(
+        chord.map(n => Tone.Frequency(n,"midi")),
+        barLenSec,
+        time,
+        0.34
+      )
 
-    // bajo: patrón por seed
-    const bassPattern = pick([ [0,2,3,1], [0,0,2,3], [0,3,2,1] ])
-    for (let k=0;k<4;k++){
-      const idx = bassPattern[k % bassPattern.length]
-      const note = chord[Math.min(idx, chord.length-1)] - 12
-      const bt = barStart + k * Tone.Time("4n").toSeconds()
-      bass.triggerAttackRelease(Tone.Frequency(note, "midi"), "8n", humanize(bt, 0.004), 0.6 - k*0.05)
-    }
+      // bajo en negras, patrón leve
+      const pattern = [0,2,3,1]
+      for (let k = 0; k < 4; k++){
+        const idx = pattern[k % pattern.length]
+        const note = chord[Math.min(idx, chord.length-1)] - 12
+        const bt = time + k * Tone.Time("4n").toSeconds()
+        bass.triggerAttackRelease(Tone.Frequency(note, "midi"), "8n", humanize(bt, 0.004), 0.6 - k*0.05)
+      }
+    }, `+${barTime.toFixed(3)}`)
+    barIds.push(id)
   }
 
-  // === Melodía principal (con animación) ===
-  for (let i = 0; i < melodyMidis.length; i++){
-    const when = t0 + i * stepSec
-    const m = melodyMidis[i]
-    const v = 0.62 + 0.28 * Math.sin(i * (0.5 + Math.random()*0.4))
-    onStep?.(i)
-    lead.triggerAttackRelease(Tone.Frequency(m, "midi"), noteDurSec, humanize(when, 0.006), v)
-    // eslint-disable-next-line no-await-in-loop
-    await new Promise(r => setTimeout(r, stepSec * 1000))
-  }
+  // === Melodía principal (con animación) usando scheduleRepeat ===
+  let stepIdx = 0
+  const seqId = transport.scheduleRepeat((time) => {
+    if (stepIdx >= melodyMidis.length) {
+      transport.clear(seqId)
+      // parar tras un pequeño tail
+      const stopId = transport.schedule((t2) => {
+        barIds.forEach(id => transport.clear(id))
+        transport.stop()
+        transport.cancel(0)
+        lead.dispose(); pad.dispose(); bass.dispose(); reverb.dispose(); delay.dispose()
+        onEnd?.()
+      }, "+0.8")
+      return
+    }
+    const m = melodyMidis[stepIdx]
+    const v = 0.62 + 0.28 * Math.sin(stepIdx * 0.7)
+    onStep?.(stepIdx)
+    lead.triggerAttackRelease(Tone.Frequency(m, "midi"), noteDurSec, humanize(time, 0.006), v)
+    stepIdx++
+  }, stepSec, "+0.1") // empieza a +0.1s
 
-  // tail
-  const totalSeconds = melodyMidis.length * stepSec + 1.6
-  await new Promise(r => setTimeout(r, Math.max(0.2, totalSeconds) * 1000))
-
-  lead.dispose(); pad.dispose(); bass.dispose(); reverb.dispose(); delay.dispose()
-  onEnd?.()
+  // Arranque
+  transport.start()
 }
 
+// ===== Modo de generación (por si lo usas en App.jsx) =====
 export function parseGenMode() {
   const url = new URL(window.location.href)
   const g = (url.searchParams.get("gen") || "").toLowerCase()
-  // si no viene nada, por default = "seed"
+  // si no viene nada, por default = "seed" (tu App decide si llamar a otro motor)
   return g || "seed"
 }
