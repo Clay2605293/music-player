@@ -247,5 +247,5 @@ export function parseGenMode() {
   const url = new URL(window.location.href)
   const g = (url.searchParams.get("gen") || "").toLowerCase()
   // si no viene nada, por default = "seed" (tu App decide si llamar a otro motor)
-  return g || "seed"
+  return g || "classic"
 }

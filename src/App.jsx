@@ -1,6 +1,8 @@
+// src/App.jsx
 import { useMemo, useState } from "react"
 import { parseBeautyParams, playBeautiful, parseGenMode } from "./lib/beautyTone"
 import { playSeedAvalanche } from "./lib/seedAvalanche"
+import { playBeautifulClassic } from "./lib/beautyClassic" // <- NUEVO
 import NoteChip from "./components/NoteChip"
 import "./index.css"
 
@@ -14,7 +16,14 @@ export default function App() {
     if (playing) return
     setPlaying(true)
     try {
-      if (mode === "seed") {
+      if (mode === "classic") {
+        // skin clásico: piano + strings + bajo (melodía de beauty hybrid)
+        await playBeautifulClassic({
+          ...params,
+          onStep: (i)=>setActive(i),
+          onEnd: ()=>{ setActive(-1); setPlaying(false) }
+        })
+      } else if (mode === "seed") {
         await playSeedAvalanche({
           ...params,
           onStep: (i)=>setActive(i),
@@ -38,7 +47,7 @@ export default function App() {
       <header className="hero">
         <h1>Hex Sonata Player</h1>
         <p className="subtitle">
-          Params: ?notes=...&key=C&scale=major&prog=I-V-vi-IV&bpm=96
+          Params: ?notes=...&key=C&scale=major&prog=I-V-vi-IV&bpm=96&gen=classic
         </p>
       </header>
 
