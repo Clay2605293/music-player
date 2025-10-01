@@ -229,3 +229,10 @@ export async function playBeautiful({
   lead.dispose(); pad.dispose(); bass.dispose(); reverb.dispose(); delay.dispose()
   onEnd?.()
 }
+
+export function parseGenMode() {
+  const url = new URL(window.location.href)
+  const g = (url.searchParams.get("gen") || "").toLowerCase()
+  // si no viene nada, por default = "seed"
+  return g || "seed"
+}

@@ -1,22 +1,32 @@
 import { useMemo, useState } from "react"
-import { parseBeautyParams, playBeautiful } from "./lib/beautyTone"
+import { parseBeautyParams, playBeautiful, parseGenMode } from "./lib/beautyTone"
+import { playSeedAvalanche } from "./lib/seedAvalanche"
 import NoteChip from "./components/NoteChip"
 import "./index.css"
 
 export default function App() {
   const params = useMemo(() => parseBeautyParams(), [])
+  const mode = useMemo(() => parseGenMode(), [])
   const [active, setActive] = useState(-1)
   const [playing, setPlaying] = useState(false)
 
   const onPlay = async () => {
-    if (playing || params.notes.length === 0) return
+    if (playing) return
     setPlaying(true)
-    try{
-      await playBeautiful({
-        ...params,
-        onStep: (i)=>setActive(i),
-        onEnd: ()=>{ setActive(-1); setPlaying(false) }
-      })
+    try {
+      if (mode === "seed") {
+        await playSeedAvalanche({
+          ...params,
+          onStep: (i)=>setActive(i),
+          onEnd: ()=>{ setActive(-1); setPlaying(false) }
+        })
+      } else {
+        await playBeautiful({
+          ...params,
+          onStep: (i)=>setActive(i),
+          onEnd: ()=>{ setActive(-1); setPlaying(false) }
+        })
+      }
     } catch {
       setActive(-1)
       setPlaying(false)
@@ -50,6 +60,7 @@ export default function App() {
             {playing ? "Playing…" : "Play"}
           </button>
           <div className="params">
+            <span><strong>Mode:</strong> {mode}</span>
             <span><strong>Key:</strong> {params.key}</span>
             <span><strong>Scale:</strong> {params.scaleName}</span>
             <span><strong>Prog:</strong> {params.prog.join("-")}</span>
