@@ -1,3 +1,4 @@
+// src/lib/beautyTone.js
 import * as Tone from "tone"
 
 // ===== Utilidades =====
@@ -34,9 +35,12 @@ export function parseBeautyParams() {
   const len  = url.searchParams.get("len") || "8n"
   const gap  = clampFloat(url.searchParams.get("gap"), 0, 0.5, 0.05)
 
-  // NUEVO
-  const style = (url.searchParams.get("style") || "hybrid").toLowerCase() // literal|hybrid|quant
-  const follow = ((url.searchParams.get("follow") || "off").toLowerCase() === "on")
+  // Defaults deseados:
+  const styleParam = (url.searchParams.get("style") || "hybrid").toLowerCase() // literal|hybrid|quant
+  const followParam = url.searchParams.get("follow")
+  const follow = followParam ? (followParam.toLowerCase() === "on") : true   // <- ON por defecto
+  const style = styleParam                                                     // <- HYBRID por defecto
+
   const seedStr = url.searchParams.get("seed") || url.searchParams.get("iv") || raw || "seed"
 
   // si el user no forzó prog=, la tomamos del seed
@@ -100,7 +104,6 @@ function mapMelodyMidis({notes, key, scaleName, style}){
 
   const raw = notes.map(midiFromNoteLike).filter(m=>m!=null)
   if (style === "literal") return raw
-
   if (style === "quant")  return raw.map(m => quantizeToScale(m, tonicMidi, scale))
 
   // hybrid: corrige solo si difiere <= 1 semitono
@@ -164,7 +167,7 @@ export async function playBeautiful({
     envelope: { attack: 0.02, decay: 0.22, sustain: 0.22, release: 0.22 }
   }).connect(reverb)
 
-  // Melodía mapeada según estilo
+  // Melodía mapeada según estilo (HYBRID por defecto)
   const melodyMidis = mapMelodyMidis({notes, key, scaleName, style})
   if (melodyMidis.length === 0) {
     console.warn("No valid melody notes parsed.")
@@ -212,7 +215,7 @@ export async function playBeautiful({
   for (let i = 0; i < melodyMidis.length; i++){
     const when = t0 + i * stepSec
     const m = melodyMidis[i]
-    const v = 0.62 + 0.28 * Math.sin(i * (0.5 + rnd()*0.4))
+    const v = 0.62 + 0.28 * Math.sin(i * (0.5 + Math.random()*0.4))
     onStep?.(i)
     lead.triggerAttackRelease(Tone.Frequency(m, "midi"), noteDurSec, humanize(when, 0.006), v)
     // eslint-disable-next-line no-await-in-loop
