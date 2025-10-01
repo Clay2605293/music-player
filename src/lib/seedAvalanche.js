@@ -1,3 +1,4 @@
+// src/lib/seedAvalanche.js
 import * as Tone from "tone"
 
 // ---------- helpers musicales ----------
@@ -17,6 +18,7 @@ const chordFromDegree = (deg, tonic) =>
   (DEGREE_TO_TRIAD[deg]||[0,4,7]).map(s => 48 + ((tonic + s) % 24)) // ~C3–C5
 
 const human = (x,a)=> x + (Math.random()*2-1)*a
+const PITCH_CLASS = m => ((m % 12) + 12) % 12
 
 // ---------- hashing & PRNG (avalancha fuerte) ----------
 async function sha256Bytes(str){
@@ -45,6 +47,8 @@ function scalePitches(key, scaleName){
   const sc = (scaleName==="minor")?MINOR:MAJOR
   return sc.map(s=> (tonic+s)%12 )
 }
+
+// motivo + variación + saltos + silencios
 function generateMelody({steps, rnd, key, scaleName}){
   const pcs = scalePitches(key, scaleName)
   const octaves = [4,4,5,3,5,4,5]
@@ -70,13 +74,74 @@ function generateMelody({steps, rnd, key, scaleName}){
   return melody
 }
 
+// ---------- armonía guiada por melodía (MEJORA 1) ----------
+function buildDiatonicTriads(key, scaleName){
+  const tonic = KEYS[key] || 0
+  const degrees = [
+    {name:"I",  pcs:[0,4,7]},
+    {name:"ii", pcs:[2,5,9]},
+    {name:"iii",pcs:[4,7,11]},
+    {name:"IV", pcs:[5,9,0]},
+    {name:"V",  pcs:[7,11,2]},
+    {name:"vi", pcs:[9,0,4]},
+  ]
+  return degrees.map(d => ({
+    name: d.name,
+    pcs: d.pcs.map(semi => ((tonic + semi) % 12 + 12) % 12),
+    midi: d.pcs.map(semi => 48 + ((tonic + semi) % 24))
+  }))
+}
+
+function scoreTriadForBar(triadPcs, barPcs, strongPc){
+  let score = 0
+  for (let pc=0; pc<12; pc++){
+    if (barPcs[pc] > 0 && triadPcs.includes(pc)){
+      score += barPcs[pc]
+    }
+  }
+  if (strongPc != null && triadPcs.includes(strongPc)) score += 1.5
+  return score
+}
+
+function chooseChordForBar({barMidis, key, scaleName, prefer}){
+  const triads = buildDiatonicTriads(key, scaleName)
+  if (barMidis.length === 0) return triads[0] // I
+
+  const pcs = new Array(12).fill(0)
+  let strongPc = null
+  for (const m of barMidis){
+    const pc = PITCH_CLASS(m)
+    pcs[pc]++
+    if (strongPc == null) strongPc = pc
+  }
+
+  let best = triads[0], bestScore = -1e9
+  for (const t of triads){
+    let s = scoreTriadForBar(t.pcs, pcs, strongPc)
+    if (prefer && t.name === prefer) s += 0.25
+    s += (t.name==="V") ? 0.05 : 0 // leve sesgo a V
+    if (s > bestScore){ bestScore = s; best = t }
+  }
+  return best
+}
+
+// ---------- incluir nota fuerte en el acorde (MEJORA 2) ----------
+function adjustChordToStrongNote({triad, strongMidi, key, scaleName}){
+  if (strongMidi == null) return triad
+  const strongPc = PITCH_CLASS(strongMidi)
+  if (triad.pcs.includes(strongPc)) return triad
+  const triads = buildDiatonicTriads(key, scaleName)
+  const cand = triads.filter(t => t.pcs.includes(strongPc))
+  return cand[0] || triad
+}
+
 // ---------- interfaz: usa seed (iv|seed|notes) y genera todo ----------
 export async function playSeedAvalanche({
   notes, bpm, len, gap, swing, onStep, onEnd, seedStr, key:forcedKey, scaleName:forcedScale, prog:forcedProg
 }){
   await Tone.start()
 
-  // Limpieza por si había algo corriendo antes (evita eventos colgados)
+  // Limpieza por si había algo corriendo antes
   const t = Tone.getTransport()
   t.stop()
   t.cancel(0)
@@ -96,14 +161,14 @@ export async function playSeedAvalanche({
   const prog = forcedProg || pick(PROGRESSIONS, rnd)
 
   // ===== Instrumentos =====
-  // Piano realista (Sampler Salamander) como lead por defecto
+  // Piano (Sampler Salamander) como lead por defecto
   const piano = new Tone.Sampler({
     urls: {
-      A1: "A1.mp3", C2: "C2.mp3", "D#2": "Ds2.mp3", "F#2": "Fs2.mp3",
-      A2: "A2.mp3", C3: "C3.mp3", "D#3": "Ds3.mp3", "F#3": "Fs3.mp3",
-      A3: "A3.mp3", C4: "C4.mp3", "D#4": "Ds4.mp3", "F#4": "Fs4.mp3",
-      A4: "A4.mp3", C5: "C5.mp3", "D#5": "Ds5.mp3", "F#5": "Fs5.mp3",
-      A5: "A5.mp3"
+      "A1": "A1.mp3", "C2": "C2.mp3", "D#2": "Ds2.mp3", "F#2": "Fs2.mp3",
+      "A2": "A2.mp3", "C3": "C3.mp3", "D#3": "Ds3.mp3", "F#3": "Fs3.mp3",
+      "A3": "A3.mp3", "C4": "C4.mp3", "D#4": "Ds4.mp3", "F#4": "Fs4.mp3",
+      "A4": "A4.mp3", "C5": "C5.mp3", "D#5": "Ds5.mp3", "F#5": "Fs5.mp3",
+      "A5": "A5.mp3"
     },
     release: 1.2,
     baseUrl: "https://tonejs.github.io/audio/salamander/"
@@ -125,9 +190,8 @@ export async function playSeedAvalanche({
   piano.connect(reverb).toDestination()
   pad.connect(reverb).toDestination()
   bass.connect(reverb).toDestination()
-  delay.toDestination() // deja el delay disponible para el piano abajo si quieres
+  delay.toDestination()
 
-  // Asegúrate de que el sampler cargó
   try { await piano.loaded } catch (e) { console.warn("Piano not fully loaded", e) }
 
   // genera melodía
@@ -142,24 +206,88 @@ export async function playSeedAvalanche({
   const stepsPerBar = Math.max(1, Math.round(barSec/stepSec))
   const totalBars = Math.ceil(melody.length/stepsPerBar)
 
-  // ===== Acompañamiento programado en el Transport =====
+  // ===== Patrones de acompañamiento variados (MEJORA 3) =====
+  const PATTERNS = {
+    block: (time, chord) => {
+      pad.triggerAttackRelease(chord.map(n=>Tone.Frequency(n,"midi")), barSec, time, 0.28)
+      const bassLine = [0,2,3,1]
+      for (let k=0;k<4;k++){
+        const bt = time + k*Tone.Time("4n").toSeconds()
+        const idx = bassLine[k % bassLine.length]
+        const note = chord[Math.min(idx, chord.length-1)] - 12
+        bass.triggerAttackRelease(Tone.Frequency(note, "midi"), "8n", human(bt,0.003), 0.55 - k*0.05)
+      }
+    },
+    alberti: (time, chord) => {
+      const order = [0,2,1,2] // bajo-alto-medio-alto
+      for (let s=0; s<8; s++){
+        const idx = order[s%4]
+        const nt = chord[Math.min(idx, chord.length-1)]
+        const tt = time + s * Tone.Time("8n").toSeconds()
+        pad.triggerAttackRelease(Tone.Frequency(nt,"midi"), "8n", tt, 0.22)
+      }
+      for (let k=0;k<4;k++){
+        const bt = time + k*Tone.Time("4n").toSeconds()
+        bass.triggerAttackRelease(Tone.Frequency(chord[0]-12, "midi"), "8n", human(bt,0.003), 0.52 - k*0.05)
+      }
+    },
+    broken: (time, chord) => {
+      for (let s=0; s<8; s++){
+        const nt = chord[s % chord.length]
+        const tt = time + s * Tone.Time("8n").toSeconds()
+        pad.triggerAttackRelease(Tone.Frequency(nt,"midi"), "8n", tt, 0.2)
+      }
+      pad.triggerAttackRelease(chord.map(n=>Tone.Frequency(n,"midi")), barSec, time, 0.18)
+      const bassSeq = [0,2,0,2] // raíz-quinta
+      for (let k=0;k<4;k++){
+        const bt = time + k*Tone.Time("4n").toSeconds()
+        const idx = bassSeq[k%4]
+        const note = chord[Math.min(idx, chord.length-1)] - 12
+        bass.triggerAttackRelease(Tone.Frequency(note, "midi"), "8n", human(bt,0.003), 0.5 - k*0.05)
+      }
+    }
+  }
+  const patternNames = Object.keys(PATTERNS)
+  const patternName = patternNames[Math.floor(rnd()*patternNames.length)]
+  const playPattern = PATTERNS[patternName]
+
+  // ===== Acompañamiento programado en el Transport con armonía guiada =====
   const barIds = []
   for(let bar=0; bar<totalBars; bar++){
     const barTime = bar*barSec + 0.1
-    const degree = prog[bar % prog.length]
-    const chord  = chordFromDegree(degree, tonicSemitone)
+    const i0 = bar*stepsPerBar
+    const i1 = Math.min(melody.length, i0 + stepsPerBar)
+    const barNotes = melody.slice(i0, i1).filter(m=>m!=null)
+
+    // 1) triada “óptima” por melodía del compás
+    let triad = chooseChordForBar({
+      barMidis: barNotes,
+      key,
+      scaleName,
+      prefer: (bar === 0 ? "I" : null)
+    })
+
+    // 2) asegurar que la nota fuerte cae dentro del acorde
+    const strongMidi = barNotes[0] ?? null
+    triad = adjustChordToStrongNote({ triad, strongMidi, key, scaleName })
+
+    // 3) cadencia al final V -> I
+    const barsLeft = totalBars - bar
+    if (barsLeft === 2) { // penúltimo: V
+      const ts = buildDiatonicTriads(key, scaleName)
+      const V = ts.find(t => t.name==="V")
+      if (V) triad = V
+    } else if (barsLeft === 1) { // último: I
+      const ts = buildDiatonicTriads(key, scaleName)
+      const I = ts.find(t => t.name==="I")
+      if (I) triad = I
+    }
+
+    const chord = triad.midi
 
     const id = t.schedule((time)=>{
       try{
-        // pad
-        pad.triggerAttackRelease(chord.map(n=>Tone.Frequency(n,"midi")), barSec, time, 0.28)
-        // bajo patrón
-        const pattern = [0,2,3,1]
-        for (let k=0;k<4;k++){
-          const idx = pattern[k % pattern.length]
-          const bt = time + k*Tone.Time("4n").toSeconds()
-          bass.triggerAttackRelease(Tone.Frequency(chord[idx]-12, "midi"), "8n", human(bt,0.003), 0.55 - k*0.05)
-        }
+        playPattern(time, chord)
       } catch(err){ console.error("Bar schedule error:", err) }
     }, `+${barTime.toFixed(3)}`)
     barIds.push(id)
@@ -175,7 +303,6 @@ export async function playSeedAvalanche({
           barIds.forEach(id => t.clear(id))
           t.stop()
           t.cancel(0)
-          // cleanup
           piano.dispose(); pad.dispose(); bass.dispose(); reverb.dispose(); delay.dispose()
           onEnd?.()
         }, "+0.8")
@@ -185,8 +312,7 @@ export async function playSeedAvalanche({
       onStep?.(i)
       if (m != null){
         const v = 0.7 + 0.2*Math.sin(i*0.4)
-        // Dispara piano (Sampler usa nota en Hz o midi convertido)
-        piano.triggerAttackRelease(Tone.Frequency(m, "midi"), noteDur, human(time,0.004), v)
+        piano.triggerAttackRelease(Tone.Frequency(m,"midi"), noteDur, human(time,0.004), v)
       }
       i++
     } catch(err){
