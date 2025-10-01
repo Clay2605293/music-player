@@ -1,7 +1,7 @@
-// App.jsx (solo el fragmento relevante)
 import { useMemo, useState } from "react"
 import { parseBeautyParams, playBeautiful } from "./lib/beautyTone"
 import NoteChip from "./components/NoteChip"
+import "./styles.css"
 
 export default function App() {
   const params = useMemo(() => parseBeautyParams(), [])
@@ -17,7 +17,8 @@ export default function App() {
         onStep: (i)=>setActive(i),
         onEnd: ()=>{ setActive(-1); setPlaying(false) }
       })
-    } finally {
+    } catch {
+      setActive(-1)
       setPlaying(false)
     }
   }
@@ -33,9 +34,17 @@ export default function App() {
 
       <section className="card">
         <h2>Notes</h2>
-        <div className="chips">
-          {params.notes.map((n,i)=>(<NoteChip key={i} label={n} active={i===active}/>))}
-        </div>
+        {params.notes.length === 0 ? (
+          <p className="muted">Agrega <code>?notes=C4,D4,E4</code> al URL</p>
+        ) : (
+          <>
+            <div className="chips">
+              {params.notes.map((n,i)=>(<NoteChip key={i} label={n} active={i===active}/>))}
+            </div>
+            <small className="muted">Parsed notes: <strong>{params.notes.length}</strong></small>
+          </>
+        )}
+
         <div className="controls">
           <button className="btn" onClick={onPlay} disabled={playing || params.notes.length===0}>
             {playing ? "Playing…" : "Play"}
@@ -45,6 +54,7 @@ export default function App() {
             <span><strong>Scale:</strong> {params.scaleName}</span>
             <span><strong>Prog:</strong> {params.prog.join("-")}</span>
             <span><strong>BPM:</strong> {params.bpm}</span>
+            <span><strong>Len:</strong> {params.len}</span>
           </div>
         </div>
       </section>

@@ -1,4 +1,3 @@
-// src/lib/beautyTone.js
 import * as Tone from "tone"
 
 // Utilidades musicales
@@ -18,10 +17,12 @@ const DEGREE_TO_TRIAD = {
 export function parseBeautyParams() {
   const url = new URL(window.location.href)
 
-  // Decodifica %23 → # y otros caracteres del query
-  const raw = decodeURIComponent(url.searchParams.get("notes") || url.searchParams.get("n") || "")
+  // Lee y decodifica notes del query
+  let raw = url.searchParams.get("notes") || url.searchParams.get("n") || ""
+  try { raw = decodeURIComponent(raw) } catch { /* ya venía decodificado */ }
+
   const tokens = raw
-    .split(/[,\-\s]+/)
+    .split(/[,\s]+/)     // separa por coma o espacios (no uses "-" aquí)
     .map(s => s.trim())
     .filter(Boolean)
 
@@ -51,7 +52,10 @@ function clampFloat(v, min, max, def){
 function midiFromNoteLike(n){
   // A4 = 69. Acepta "C4", "G#3", "Bb5"
   const m = String(n).trim().match(/^([A-Ga-g])([#b]?)(\d)$/)
-  if(!m) return null
+  if(!m){
+    console.warn("Nota inválida:", n)
+    return null
+  }
   const L = m[1].toUpperCase(), acc = m[2], oct = +m[3]
   const base = {C:0,D:2,E:4,F:5,G:7,A:9,B:11}[L]
   const alt = acc==="#" ? 1 : (acc==="b" ? -1 : 0)
@@ -117,11 +121,12 @@ export async function playBeautiful({ notes, key, scaleName, prog, bpm, swing, l
     .map(m => quantizeToScale(m, tonicMidi, scale))
 
   if (melodyMidis.length === 0) {
-    console.warn("No valid melody notes parsed from URL. Ensure # is decoded (e.g., G%234 → G#4).")
+    console.warn("No valid melody notes parsed from URL. Asegúrate de pasar G%234 (→ G#4), etc.")
   }
 
   // Progresión repetida para cubrir la melodía
-  const stepsPerChord = 4 // 4 corcheas por acorde
+  const noteDurSec = Tone.Time(len).toSeconds()
+  const stepsPerChord = Math.max(1, Math.round((4 * Tone.Time("8n").toSeconds()) / noteDurSec)) // aprox un compás
   const totalChords = Math.ceil(Math.max(1, melodyMidis.length) / stepsPerChord)
   const expProg = Array.from({ length: totalChords }, (_, i) => prog[i % prog.length])
 
@@ -149,13 +154,13 @@ export async function playBeautiful({ notes, key, scaleName, prog, bpm, swing, l
     const v = 0.65 + 0.25 * Math.sin(idx * 0.7)
     onStep?.(idx)
     lead.triggerAttackRelease(Tone.Frequency(m, "midi"), len, humanize(time, 0.006), v)
-  }, melodyMidis.map((_, i) => [start + i * Tone.Time(len).toSeconds(), i]))
+  }, melodyMidis.map((_, i) => [start + i * noteDurSec, i]))
 
   seq.start(start)
   Tone.Transport.start(start)
 
   // Duración total correcta según len
-  const totalSeconds = melodyMidis.length * Tone.Time(len).toSeconds() + 2.0
+  const totalSeconds = melodyMidis.length * noteDurSec + 2.0
   await new Promise(r => setTimeout(r, Math.max(0.2, totalSeconds) * 1000))
 
   // Stop y limpieza
